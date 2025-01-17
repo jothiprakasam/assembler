@@ -128,7 +128,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <input_file.asm> <output_file.bin>\n", argv[0]);
         return 1;
     }
-
+    //extension checker
+    char *ext=strchr(argv[1],'.');
+    if(strcmp(ext,".asmy")!=0){
+        printf("\nFile extension not valid....");
+        exit(1);
+    }
     assemble_program(argv[1], argv[2]);
     return 0;
 }
