@@ -15,40 +15,74 @@
 #define OPCODE_HLT  0xF
 
 #define STACK_SIZE 256
+#define MEMORY_SIZE 1024
 
-// Virtual Machine CPU structure
 typedef struct {
     int registers[4];
-    int pc; // Program Counter
-    int sp; // Stack Pointer
+    int pc; // program counter
+    int sp; // stack pointer
+    int bp; // base pointer
     int halted;
-    unsigned short stack[STACK_SIZE];
+    unsigned short memory[MEMORY_SIZE]; // Virtual memory
+    unsigned short stack[STACK_SIZE];  // Stack memory
 } CPU;
 
-// Fetch an instruction from the binary file
-unsigned short fetch_instruction(FILE *bin_file, int *pc) {
-    unsigned short instruction;
-    fseek(bin_file, (*pc) * sizeof(instruction), SEEK_SET);
-    if (fread(&instruction, sizeof(instruction), 1, bin_file) == 1) {
-        (*pc)++;
-        return instruction;
+// Fetch instruction from memory
+unsigned short fetch_instruction(CPU *cpu) {
+    if (cpu->pc < 0 || cpu->pc >= MEMORY_SIZE - 1) {
+        fprintf(stderr, "Error: PC out of bounds\n");
+        cpu->halted = 1;
+        return 0xFFFF;
     }
-    return 0xFFFF; // End of file or error
+
+    // Fetch two bytes from memory and form a 16-bit instruction
+    unsigned char low_byte = cpu->memory[cpu->pc];      // Lower 8 bits
+    unsigned char high_byte = cpu->memory[cpu->pc + 1]; // Higher 8 bits
+
+    // Increment PC by 2 since instructions are 16-bit
+    cpu->pc += 2;
+
+    // Combine bytes (assuming little-endian storage)
+    return (high_byte << 8) | low_byte;
+}
+
+// Read from memory
+unsigned short read_memory(CPU *cpu, int address) {
+    if (address < 0 || address >= MEMORY_SIZE) {
+        fprintf(stderr, "Memory Error: Address out of bounds\n");
+        exit(1);
+    }
+    return cpu->memory[address];
+}
+
+// Write to memory
+void write_memory(CPU *cpu, int address, unsigned short value) {
+    if (address < 0 || address >= MEMORY_SIZE) {
+        fprintf(stderr, "Memory Error: Address out of bounds\n");
+        exit(1);
+    }
+    cpu->memory[address] = value;
 }
 
 // Execute a single instruction
-void execute_instruction(CPU *cpu, unsigned short instruction, FILE *bin_file) {
+void execute_instruction(CPU *cpu, unsigned short instruction) {
     int opcode = (instruction >> 12) & 0xF;
     int reg_dest = (instruction >> 8) & 0xF;
-    int immediate_flag = (instruction >> 7) & 0x1;
+    int memory_flag = (instruction >> 7) & 0x1;
     int reg_src = (instruction >> 4) & 0x7;
-    int immediate_value = instruction & 0x7F; // Use 7 bits for immediate value
+    int immediate_or_addr = instruction & 0x7F; // Address or immediate value
 
     switch (opcode) {
         case OPCODE_MOV:
-            if (immediate_flag) {
-                cpu->registers[reg_dest] = immediate_value;
-            } else {
+            if (memory_flag) {
+                if (reg_src == 0x7) { // Load from memory
+                    cpu->registers[reg_dest] = read_memory(cpu, immediate_or_addr);
+                } else { // Store to memory
+                    write_memory(cpu, immediate_or_addr, cpu->registers[reg_dest]);
+                }
+            } else if (reg_src == 0x7) { // Immediate value
+                cpu->registers[reg_dest] = immediate_or_addr;
+            } else { // Register-to-register
                 cpu->registers[reg_dest] = cpu->registers[reg_src];
             }
             break;
@@ -79,13 +113,13 @@ void execute_instruction(CPU *cpu, unsigned short instruction, FILE *bin_file) {
             break;
 
         case OPCODE_JMP:
-            cpu->pc = immediate_value;
+            cpu->pc = immediate_or_addr;
             break;
 
         case OPCODE_CALL:
             if (cpu->sp < STACK_SIZE) {
                 cpu->stack[cpu->sp++] = cpu->pc;
-                cpu->pc = immediate_value;
+                cpu->pc = immediate_or_addr;
             } else {
                 fprintf(stderr, "Error: Stack overflow\n");
                 cpu->halted = 1;
@@ -102,11 +136,11 @@ void execute_instruction(CPU *cpu, unsigned short instruction, FILE *bin_file) {
             break;
 
         case OPCODE_SHL:
-            cpu->registers[reg_dest] <<= immediate_value;
+            cpu->registers[reg_dest] <<= immediate_or_addr;
             break;
 
         case OPCODE_SHR:
-            cpu->registers[reg_dest] >>= immediate_value;
+            cpu->registers[reg_dest] >>= immediate_or_addr;
             break;
 
         case OPCODE_HLT:
@@ -119,7 +153,7 @@ void execute_instruction(CPU *cpu, unsigned short instruction, FILE *bin_file) {
     }
 }
 
-// Run the program from the binary file
+// Run the program from memory
 void run_program(const char *bin_file_path) {
     FILE *bin_file = fopen(bin_file_path, "rb");
     if (!bin_file) {
@@ -127,21 +161,16 @@ void run_program(const char *bin_file_path) {
         exit(1);
     }
 
-    CPU cpu = {{0, 0, 0, 0}, 0, 0, 0, {0}};
+    CPU cpu = {{0}, 0, 0, 0, 0, {0}, {0}};
+    fread(cpu.memory, sizeof(unsigned short), MEMORY_SIZE, bin_file);
+    fclose(bin_file);
 
     printf("Starting simulation...\n");
     while (!cpu.halted) {
-        unsigned short instruction = fetch_instruction(bin_file, &cpu.pc);
-        if (instruction == 0xFFFF) {
-            printf("End of file reached.\n");
-            break;
-        }
-        execute_instruction(&cpu, instruction, bin_file);
+        unsigned short instruction = fetch_instruction(&cpu);
+        execute_instruction(&cpu, instruction);
     }
 
-    fclose(bin_file);
-
-    // Print register values after execution
     printf("Simulation complete. Final register values:\n");
     for (int i = 0; i < 4; i++) {
         printf("R%d: %d\n", i, cpu.registers[i]);
